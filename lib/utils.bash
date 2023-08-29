@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-# TODO: Ensure this is the correct GitHub homepage where releases can be downloaded for plugin-atlas.
 GH_REPO="https://github.com/ariga/atlas"
-TOOL_NAME="plugin-atlas"
+DL_BASEURL="https://release.ariga.io/atlas"
+TOOL_NAME="atlas"
 TOOL_TEST="atlas version"
 
 fail() {
@@ -14,7 +14,7 @@ fail() {
 
 curl_opts=(-fsSL)
 
-# NOTE: You might want to remove this if plugin-atlas is not hosted on GitHub releases.
+# NOTE: You might want to remove this if atlas is not hosted on GitHub releases.
 if [ -n "${GITHUB_API_TOKEN:-}" ]; then
 	curl_opts=("${curl_opts[@]}" -H "Authorization: token $GITHUB_API_TOKEN")
 fi
@@ -31,21 +31,81 @@ list_github_tags() {
 }
 
 list_all_versions() {
-	# TODO: Adapt this. By default we simply list the tag names from GitHub releases.
-	# Change this function if plugin-atlas has other means of determining installable versions.
+	# For now, by default we simply list the tag names from GitHub releases.
+	# The releases download location listed in the official docs doesn't offer a list,
+	# so use github to determine available versions for now.
+	# TODO: we could verify the listed versions are actually available at some point
 	list_github_tags
 }
 
 download_release() {
-	local version filename url
-	version="$1"
+	
+	local ATLAS_VERSION filename url
+	ATLAS_VERSION="$([ $1 == "latest" ] && echo "$1" || echo "v${1}")"
 	filename="$2"
 
-	# TODO: Adapt the release URL convention for plugin-atlas
-	url="$GH_REPO/archive/v${version}.tar.gz"
+	## ported considerable architecture detection code from: 
+	# https://atlasgo.sh
 
-	echo "* Downloading $TOOL_NAME release $version..."
-	curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download $url"
+	local _ostype _cputype _os
+    _ostype="$(uname -s)"
+    _cputype="$(uname -m)"
+
+    if [ "$_ostype" = Darwin ] && [ "$_cputype" = i386 ]; then
+        # Darwin `uname -m` lies
+        if sysctl hw.optional.x86_64 | grep -q ': 1'; then
+            _cputype=x86_64
+        fi
+    fi
+
+    case "$_cputype" in
+    xscale | arm | armv6l | armv7l | armv8l | aarch64 | arm64)
+        _cputype=arm64
+        ;;
+    x86_64 | x86-64 | x64 | amd64)
+        _cputype=amd64
+        ;;
+    *)
+        err "unknown CPU type: $_cputype"
+        ;;
+    esac
+
+    case "$_ostype" in
+    Linux | FreeBSD | NetBSD | DragonFly)
+        _ostype=linux
+        _os=Linux
+        # If the requested Atlas Version is prior to v0.12.1, the libc implementation is musl,
+        # or the glibc version is <2.31, use the musl build.
+        if [ "$ATLAS_VERSION" != "latest" ] &&
+            [ "$(printf '%s\n' "v0.12.1" "$ATLAS_VERSION" | sort -V | head -n1)" = "$ATLAS_VERSION" ]; then
+            if ldd --version 2>&1 | grep -q 'musl' ||
+                [ $(version "$(ldd --version | awk '/ldd/{print $NF}')") -lt $(version "2.31") ]; then
+                _cputype="$_cputype-musl"
+            fi
+        fi
+        ;;
+    Darwin)
+        _ostype=darwin
+        _os=MacOS
+        # We only provide arm64 builds for Mac starting with v0.12.1. If the requested version below
+        # v0.12.1, fallback to amd64 builds, since M1 chips are capable of running amd64 binaries.
+        if [ "$ATLAS_VERSION" != "latest" ] &&
+            [ "$(printf '%s\n' "v0.12.1" "$ATLAS_VERSION" | sort -V | head -n1)" = "$ATLAS_VERSION" ]; then
+            _cputype=amd64
+        fi
+        ;;
+    *)
+        err "unrecognized OS type: $_ostype"
+        ;;
+    esac
+
+    PLATFORM="$_ostype-$_cputype"
+
+	#https://release.ariga.io/atlas/atlas-[{PLATFORM}[{OS}linux|darwin]-[{arch}arm64|amd64]-[{ATLAS_VERSION}latest|v{semver}]]
+	url="$DL_BASEURL/atlas-${PLATFORM}-${ATLAS_VERSION}"
+
+	echo "* Downloading ${TOOL_NAME} release ${ATLAS_VERSION} from ${url}..."
+	curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download ${url}"
 }
 
 install_version() {
@@ -61,7 +121,7 @@ install_version() {
 		mkdir -p "$install_path"
 		cp -r "$ASDF_DOWNLOAD_PATH"/* "$install_path"
 
-		# TODO: Assert plugin-atlas executable exists.
+		
 		local tool_cmd
 		tool_cmd="$(echo "$TOOL_TEST" | cut -d' ' -f1)"
 		test -x "$install_path/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
