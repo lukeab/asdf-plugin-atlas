@@ -15,7 +15,7 @@
 
 # Dependencies
 
-- `bash`, `curl`, `tar`: generic POSIX utilities.
+- `git`, `bash`, `curl`, `tar`: generic POSIX utilities.
 
 
 # Install
